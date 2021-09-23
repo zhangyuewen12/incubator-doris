@@ -27,14 +27,17 @@ import org.apache.flink.configuration.Configuration;
 import org.apache.flink.runtime.util.ExecutorThreadFactory;
 import org.apache.flink.table.data.GenericRowData;
 import org.apache.flink.table.data.RowData;
+import org.apache.flink.types.RowKind;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Properties;
 import java.util.StringJoiner;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -45,9 +48,9 @@ import java.util.concurrent.TimeUnit;
 /**
  * DorisDynamicOutputFormat
  **/
-public class DorisDynamicOutputFormat extends RichOutputFormat<RowData> {
+public class MyDorisDynamicOutputFormat extends RichOutputFormat<RowData> {
 
-    private static final Logger LOG = LoggerFactory.getLogger(DorisDynamicOutputFormat.class);
+    private static final Logger LOG = LoggerFactory.getLogger(MyDorisDynamicOutputFormat.class);
     private static final String FIELD_DELIMITER_KEY = "column_separator";
     private static final String FIELD_DELIMITER_DEFAULT = "\t";
     private static final String LINE_DELIMITER_KEY = "line_delimiter";
@@ -69,7 +72,7 @@ public class DorisDynamicOutputFormat extends RichOutputFormat<RowData> {
     private transient ScheduledFuture<?> scheduledFuture;
     private transient volatile Exception flushException;
 
-    public DorisDynamicOutputFormat(DorisOptions option, DorisReadOptions readOptions, DorisExecutionOptions executionOptions) {
+    public MyDorisDynamicOutputFormat(DorisOptions option, DorisReadOptions readOptions, DorisExecutionOptions executionOptions) {
         this.options = option;
         this.readOptions = readOptions;
         this.executionOptions = executionOptions;
@@ -95,7 +98,7 @@ public class DorisDynamicOutputFormat extends RichOutputFormat<RowData> {
         if (executionOptions.getBatchIntervalMs() != 0 && executionOptions.getBatchSize() != 1) {
             this.scheduler = Executors.newScheduledThreadPool(1, new ExecutorThreadFactory("doris-streamload-output-format"));
             this.scheduledFuture = this.scheduler.scheduleWithFixedDelay(() -> {
-                synchronized (DorisDynamicOutputFormat.this) {
+                synchronized (MyDorisDynamicOutputFormat.this) {
                     if (!closed) {
                         try {
                             flush();
@@ -124,20 +127,37 @@ public class DorisDynamicOutputFormat extends RichOutputFormat<RowData> {
         }
     }
 
-    private void addBatch(RowData row) {
+    private void addBatch(RowData row)  {
         StringJoiner value = new StringJoiner(this.fieldDelimiter);
         GenericRowData rowData = (GenericRowData) row;
-        for (int i = 0; i < row.getArity(); ++i) {
-            Object field = rowData.getField(i);
-            if (field != null) {
-                value.add(field.toString());
-            } else {
-                value.add(NULL_VALUE);
+        RowKind rowKind = rowData.getRowKind();
+        System.out.println(rowKind.shortString());
+        if (rowKind == RowKind.DELETE){
+            try {
+                String table = options.getTableIdentifier();
+                Class.forName("com.mysql.cj.jdbc.Driver");
+                String sql = "delete from " + table +" where INCR_PK="+rowData.getField(0).toString();
+                System.out.println(sql);
+                Connection connection = DriverManager.getConnection("jdbc:mysql://182.119.75.150:9030?evaluation","root","P@ssw0rd01");
+                PreparedStatement ps = connection.prepareStatement(sql);
+                ps.execute();
+            }catch (Exception e){
+                e.printStackTrace();;
+                throw new RuntimeException("执行sql异常!");
             }
+        }else {
+            for (int i = 0; i < row.getArity(); ++i) {
+                Object field = rowData.getField(i);
+                if (field != null) {
+                    value.add(field.toString());
+                } else {
+                    value.add(NULL_VALUE);
+                }
+            }
+            //test
+            System.out.println("test:"+value.toString());
+            batch.add(value.toString());
         }
-        //test
-        System.out.println("test:"+value.toString());
-        batch.add(value.toString());
     }
 
     @Override
@@ -209,7 +229,7 @@ public class DorisDynamicOutputFormat extends RichOutputFormat<RowData> {
     }
 
     /**
-     * Builder for {@link DorisDynamicOutputFormat}.
+     * Builder for {@link MyDorisDynamicOutputFormat}.
      */
     public static class Builder {
         private DorisOptions.Builder optionsBuilder;
@@ -250,8 +270,8 @@ public class DorisDynamicOutputFormat extends RichOutputFormat<RowData> {
             return this;
         }
 
-        public DorisDynamicOutputFormat build() {
-            return new DorisDynamicOutputFormat(
+        public MyDorisDynamicOutputFormat build() {
+            return new MyDorisDynamicOutputFormat(
                     optionsBuilder.build(), readOptions, executionOptions
             );
         }
