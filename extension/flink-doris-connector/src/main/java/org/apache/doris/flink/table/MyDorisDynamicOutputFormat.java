@@ -138,7 +138,7 @@ public class MyDorisDynamicOutputFormat extends RichOutputFormat<RowData> {
                 Class.forName("com.mysql.cj.jdbc.Driver");
                 String sql = "delete from " + table +" where INCR_PK="+rowData.getField(0).toString();
                 System.out.println(sql);
-                Connection connection = DriverManager.getConnection("jdbc:mysql://182.119.75.150:9030?evaluation","root","P@ssw0rd01");
+                Connection connection = DriverManager.getConnection("","","");
                 PreparedStatement ps = connection.prepareStatement(sql);
                 ps.execute();
             }catch (Exception e){
