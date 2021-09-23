@@ -14,11 +14,11 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
-package org.apache.doris.flink.table;
+package org.apache.doris.flink.cdc;
 
 import org.apache.doris.flink.cfg.DorisExecutionOptions;
-import org.apache.doris.flink.cfg.DorisOptions;
 import org.apache.doris.flink.cfg.DorisReadOptions;
+import org.apache.flink.table.catalog.ResolvedSchema;
 import org.apache.flink.table.connector.ChangelogMode;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
 import org.apache.flink.table.connector.sink.OutputFormatProvider;
@@ -27,16 +27,18 @@ import org.apache.flink.types.RowKind;
 /**
  * DorisDynamicTableSink
  **/
-public class MyDorisDynamicTableSink implements DynamicTableSink {
+public class CDCDorisDynamicTableSink implements DynamicTableSink {
 
-    private final DorisOptions options;
+    private final CDCDorisOptions options;
     private final DorisReadOptions readOptions;
     private final DorisExecutionOptions executionOptions;
+    private final ResolvedSchema schema;
 
-    public MyDorisDynamicTableSink(DorisOptions options, DorisReadOptions readOptions, DorisExecutionOptions executionOptions) {
+    public CDCDorisDynamicTableSink(CDCDorisOptions options, DorisReadOptions readOptions, DorisExecutionOptions executionOptions,ResolvedSchema schema) {
         this.options = options;
         this.readOptions = readOptions;
         this.executionOptions = executionOptions;
+        this.schema = schema;
     }
 
     @Override
@@ -50,12 +52,15 @@ public class MyDorisDynamicTableSink implements DynamicTableSink {
 
     @Override
     public SinkRuntimeProvider getSinkRuntimeProvider(Context context) {
-        MyDorisDynamicOutputFormat.Builder builder = MyDorisDynamicOutputFormat.builder()
+        CDCDorisDynamicOutputFormat.Builder builder = CDCDorisDynamicOutputFormat.builder()
                 .setFenodes(options.getFenodes())
                 .setUsername(options.getUsername())
                 .setPassword(options.getPassword())
                 .setTableIdentifier(options.getTableIdentifier())
+                .setPrimaryKey(options.getPrimaryKey())
+                .setQueryURL(options.getQueryURL())
                 .setReadOptions(readOptions)
+                .setSchema(schema)
                 .setExecutionOptions(executionOptions);
 
         return OutputFormatProvider.of(builder.build());
@@ -63,11 +68,11 @@ public class MyDorisDynamicTableSink implements DynamicTableSink {
 
     @Override
     public DynamicTableSink copy() {
-        return new MyDorisDynamicTableSink(options, readOptions, executionOptions);
+        return new CDCDorisDynamicTableSink(options, readOptions, executionOptions,schema);
     }
 
     @Override
     public String asSummaryString() {
-        return "Doris Table Sink";
+        return "Doris Table CDC Sink";
     }
 }

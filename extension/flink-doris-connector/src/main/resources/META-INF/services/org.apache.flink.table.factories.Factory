@@ -15,4 +15,5 @@
 # specific language governing permissions and limitations
 # under the License.
 
-org.apache.doris.flink.table.MyDorisDynamicTableFactorySink
+org.apache.doris.flink.cdc.CDCDorisDynamicTableSinkFactory
+org.apache.doris.flink.table.DorisDynamicTableFactory

@@ -14,7 +14,7 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
-package org.apache.doris.flink.table;
+package org.apache.doris.flink.cdc;
 
 import org.apache.doris.flink.cfg.DorisExecutionOptions;
 import org.apache.doris.flink.cfg.DorisOptions;
@@ -22,9 +22,12 @@ import org.apache.doris.flink.cfg.DorisReadOptions;
 import org.apache.doris.flink.exception.DorisException;
 import org.apache.doris.flink.exception.StreamLoadException;
 import org.apache.doris.flink.rest.RestService;
+import org.apache.doris.flink.table.DorisStreamLoad;
 import org.apache.flink.api.common.io.RichOutputFormat;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.runtime.util.ExecutorThreadFactory;
+import org.apache.flink.table.catalog.Column;
+import org.apache.flink.table.catalog.ResolvedSchema;
 import org.apache.flink.table.data.GenericRowData;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.types.RowKind;
@@ -35,9 +38,9 @@ import java.io.IOException;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
-import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.StringJoiner;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -48,9 +51,9 @@ import java.util.concurrent.TimeUnit;
 /**
  * DorisDynamicOutputFormat
  **/
-public class MyDorisDynamicOutputFormat extends RichOutputFormat<RowData> {
+public class CDCDorisDynamicOutputFormat extends RichOutputFormat<RowData> {
 
-    private static final Logger LOG = LoggerFactory.getLogger(MyDorisDynamicOutputFormat.class);
+    private static final Logger LOG = LoggerFactory.getLogger(CDCDorisDynamicOutputFormat.class);
     private static final String FIELD_DELIMITER_KEY = "column_separator";
     private static final String FIELD_DELIMITER_DEFAULT = "\t";
     private static final String LINE_DELIMITER_KEY = "line_delimiter";
@@ -59,7 +62,7 @@ public class MyDorisDynamicOutputFormat extends RichOutputFormat<RowData> {
     private final String fieldDelimiter;
     private final String lineDelimiter;
 
-    private DorisOptions options;
+    private CDCDorisOptions options;
     private DorisReadOptions readOptions;
     private DorisExecutionOptions executionOptions;
     private DorisStreamLoad dorisStreamLoad;
@@ -72,12 +75,16 @@ public class MyDorisDynamicOutputFormat extends RichOutputFormat<RowData> {
     private transient ScheduledFuture<?> scheduledFuture;
     private transient volatile Exception flushException;
 
-    public MyDorisDynamicOutputFormat(DorisOptions option, DorisReadOptions readOptions, DorisExecutionOptions executionOptions) {
+
+    private  ResolvedSchema schema;
+
+    public CDCDorisDynamicOutputFormat(CDCDorisOptions option, DorisReadOptions readOptions, DorisExecutionOptions executionOptions,ResolvedSchema schema) {
         this.options = option;
         this.readOptions = readOptions;
         this.executionOptions = executionOptions;
         this.fieldDelimiter = executionOptions.getStreamLoadProp().getProperty(FIELD_DELIMITER_KEY, FIELD_DELIMITER_DEFAULT);
         this.lineDelimiter = executionOptions.getStreamLoadProp().getProperty(LINE_DELIMITER_KEY, LINE_DELIMITER_DEFAULT);
+        this.schema = schema;
     }
 
     @Override
@@ -98,7 +105,7 @@ public class MyDorisDynamicOutputFormat extends RichOutputFormat<RowData> {
         if (executionOptions.getBatchIntervalMs() != 0 && executionOptions.getBatchSize() != 1) {
             this.scheduler = Executors.newScheduledThreadPool(1, new ExecutorThreadFactory("doris-streamload-output-format"));
             this.scheduledFuture = this.scheduler.scheduleWithFixedDelay(() -> {
-                synchronized (MyDorisDynamicOutputFormat.this) {
+                synchronized (CDCDorisDynamicOutputFormat.this) {
                     if (!closed) {
                         try {
                             flush();
@@ -136,9 +143,20 @@ public class MyDorisDynamicOutputFormat extends RichOutputFormat<RowData> {
             try {
                 String table = options.getTableIdentifier();
                 Class.forName("com.mysql.cj.jdbc.Driver");
-                String sql = "delete from " + table +" where INCR_PK="+rowData.getField(0).toString();
+                String primaryKey = options.getPrimaryKey();
+                String primaryValue = "";
+                for (int i = 0; i < row.getArity(); i++) {
+                    String colName = schema.getColumn(i).get().getName();
+                    if (colName.equals(primaryKey)){
+                        Object field = rowData.getField(i);
+                        if (field!=null){
+                            primaryValue = field.toString();
+                        }
+                    }
+                }
+                String sql = "delete from " + table +" where "+ options.getPrimaryKey() +"="+primaryValue;
                 System.out.println(sql);
-                Connection connection = DriverManager.getConnection("","","");
+                Connection connection = DriverManager.getConnection(options.getQueryURL(),options.getUsername(), options.getPassword());
                 PreparedStatement ps = connection.prepareStatement(sql);
                 ps.execute();
             }catch (Exception e){
@@ -211,7 +229,8 @@ public class MyDorisDynamicOutputFormat extends RichOutputFormat<RowData> {
     private String getBackend() throws IOException {
         try {
             //get be url from fe
-            return RestService.randomBackend(options, readOptions, LOG);
+//            return RestService.randomBackend(options, readOptions, LOG);
+            return RestService.randomBackend(options.getDorisOptions(), readOptions, LOG);
         } catch (IOException | DorisException e) {
             LOG.error("get backends info fail");
             throw new IOException(e);
@@ -229,15 +248,16 @@ public class MyDorisDynamicOutputFormat extends RichOutputFormat<RowData> {
     }
 
     /**
-     * Builder for {@link MyDorisDynamicOutputFormat}.
+     * Builder for {@link CDCDorisDynamicOutputFormat}.
      */
     public static class Builder {
-        private DorisOptions.Builder optionsBuilder;
+        private CDCDorisOptions.Builder optionsBuilder;
         private DorisReadOptions readOptions;
         private DorisExecutionOptions executionOptions;
+        private ResolvedSchema schema;
 
         public Builder() {
-            this.optionsBuilder = DorisOptions.builder();
+            this.optionsBuilder = CDCDorisOptions.builder();
         }
 
         public Builder setFenodes(String fenodes) {
@@ -260,6 +280,15 @@ public class MyDorisDynamicOutputFormat extends RichOutputFormat<RowData> {
             return this;
         }
 
+        public Builder setPrimaryKey(String primaryKey){
+            this.optionsBuilder.setPrimaryKey(primaryKey);
+            return this;
+        }
+
+        public Builder setQueryURL(String queryURL){
+            this.optionsBuilder.setQueryURL(queryURL);
+            return this;
+        }
         public Builder setReadOptions(DorisReadOptions readOptions) {
             this.readOptions = readOptions;
             return this;
@@ -269,10 +298,14 @@ public class MyDorisDynamicOutputFormat extends RichOutputFormat<RowData> {
             this.executionOptions = executionOptions;
             return this;
         }
+        public Builder setSchema(ResolvedSchema schema){
+            this.schema = schema;
+            return this;
+        }
 
-        public MyDorisDynamicOutputFormat build() {
-            return new MyDorisDynamicOutputFormat(
-                    optionsBuilder.build(), readOptions, executionOptions
+        public CDCDorisDynamicOutputFormat build() {
+            return new CDCDorisDynamicOutputFormat(
+                    optionsBuilder.build(), readOptions, executionOptions,schema
             );
         }
     }

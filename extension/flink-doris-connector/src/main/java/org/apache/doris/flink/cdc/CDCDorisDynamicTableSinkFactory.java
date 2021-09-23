@@ -15,14 +15,14 @@
 // specific language governing permissions and limitations
 // under the License.
 
-package org.apache.doris.flink.table;
+package org.apache.doris.flink.cdc;
 
 import org.apache.doris.flink.cfg.DorisExecutionOptions;
-import org.apache.doris.flink.cfg.DorisOptions;
 import org.apache.doris.flink.cfg.DorisReadOptions;
 import org.apache.flink.configuration.ConfigOption;
 import org.apache.flink.configuration.ConfigOptions;
 import org.apache.flink.configuration.ReadableConfig;
+import org.apache.flink.table.catalog.ResolvedSchema;
 import org.apache.flink.table.connector.sink.DynamicTableSink;
 import org.apache.flink.table.factories.DynamicTableSinkFactory;
 import org.apache.flink.table.factories.FactoryUtil;
@@ -36,17 +36,19 @@ import java.util.Set;
 import static org.apache.doris.flink.cfg.ConfigurationOptions.*;
 
 /**
- * The {@link MyDorisDynamicTableFactorySink} translates the catalog table to a table source.
+ * The {@link CDCDorisDynamicTableSinkFactory} translates the catalog table to a table source.
  *
  * <p>Because the table source requires a decoding format, we are discovering the format using the
  * provided {@link FactoryUtil} for convenience.
  */
-public final class MyDorisDynamicTableFactorySink implements DynamicTableSinkFactory {
+public final class CDCDorisDynamicTableSinkFactory implements DynamicTableSinkFactory {
 
     public static final ConfigOption<String> FENODES = ConfigOptions.key("fenodes").stringType().noDefaultValue().withDescription("doris fe http address.");
     public static final ConfigOption<String> TABLE_IDENTIFIER = ConfigOptions.key("table.identifier").stringType().noDefaultValue().withDescription("the jdbc table name.");
     public static final ConfigOption<String> USERNAME = ConfigOptions.key("username").stringType().noDefaultValue().withDescription("the jdbc user name.");
     public static final ConfigOption<String> PASSWORD = ConfigOptions.key("password").stringType().noDefaultValue().withDescription("the jdbc password.");
+    public static final ConfigOption<String> PRIMARY_KEY = ConfigOptions.key("primary_key").stringType().noDefaultValue().withDescription("the table primary key.");
+    public static final ConfigOption<String> QUERY_URL = ConfigOptions.key("query_url").stringType().noDefaultValue().withDescription("the jdbc query url.");
 
     // doris options
     private static final ConfigOption<String> DORIS_READ_FIELD = ConfigOptions
@@ -143,7 +145,7 @@ public final class MyDorisDynamicTableFactorySink implements DynamicTableSinkFac
 
     @Override
     public String factoryIdentifier() {
-        return "doris-sink"; // used for matching to `connector = '...'`
+        return "doris-cdc-sink"; // used for matching to `connector = '...'`
     }
 
     @Override
@@ -151,6 +153,8 @@ public final class MyDorisDynamicTableFactorySink implements DynamicTableSinkFac
         final Set<ConfigOption<?>> options = new HashSet<>();
         options.add(FENODES);
         options.add(TABLE_IDENTIFIER);
+        options.add(PRIMARY_KEY);
+        options.add(QUERY_URL);
         return options;
     }
 
@@ -181,11 +185,13 @@ public final class MyDorisDynamicTableFactorySink implements DynamicTableSinkFac
     }
 
 
-    private DorisOptions getDorisOptions(ReadableConfig readableConfig) {
+    private CDCDorisOptions getDorisOptions(ReadableConfig readableConfig) {
         final String fenodes = readableConfig.get(FENODES);
-        final DorisOptions.Builder builder = DorisOptions.builder()
+        final CDCDorisOptions.Builder builder = CDCDorisOptions.builder()
                 .setFenodes(fenodes)
-                .setTableIdentifier(readableConfig.get(TABLE_IDENTIFIER));
+                .setTableIdentifier(readableConfig.get(TABLE_IDENTIFIER))
+                .setPrimaryKey(readableConfig.get(PRIMARY_KEY))
+                .setQueryURL(readableConfig.get(QUERY_URL));
 
         readableConfig.getOptional(USERNAME).ifPresent(builder::setUsername);
         readableConfig.getOptional(PASSWORD).ifPresent(builder::setPassword);
@@ -236,11 +242,14 @@ public final class MyDorisDynamicTableFactorySink implements DynamicTableSinkFac
         helper.validateExcept(STREAM_LOAD_PROP_PREFIX);
 
         Properties streamLoadProp = getStreamLoadProp(context.getCatalogTable().getOptions());
+
+        ResolvedSchema schema = context.getCatalogTable().getResolvedSchema();
         // create and return dynamic table source
-        return new MyDorisDynamicTableSink(
+        return new CDCDorisDynamicTableSink(
                 getDorisOptions(helper.getOptions()),
                 getDorisReadOptions(helper.getOptions()),
-                getDorisExecutionOptions(helper.getOptions(), streamLoadProp)
+                getDorisExecutionOptions(helper.getOptions(), streamLoadProp),
+                schema
         );
     }
 }
