@@ -14,7 +14,7 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License.
-package org.apache.doris.flink.cdc;
+package org.apache.doris.flink.table;
 
 import org.apache.doris.flink.cfg.DorisExecutionOptions;
 import org.apache.doris.flink.cfg.DorisOptions;
@@ -22,12 +22,9 @@ import org.apache.doris.flink.cfg.DorisReadOptions;
 import org.apache.doris.flink.exception.DorisException;
 import org.apache.doris.flink.exception.StreamLoadException;
 import org.apache.doris.flink.rest.RestService;
-import org.apache.doris.flink.table.DorisStreamLoad;
 import org.apache.flink.api.common.io.RichOutputFormat;
 import org.apache.flink.configuration.Configuration;
 import org.apache.flink.runtime.util.ExecutorThreadFactory;
-import org.apache.flink.table.catalog.Column;
-import org.apache.flink.table.catalog.ResolvedSchema;
 import org.apache.flink.table.data.GenericRowData;
 import org.apache.flink.table.data.RowData;
 import org.apache.flink.types.RowKind;
@@ -38,9 +35,9 @@ import java.io.IOException;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
+import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Optional;
 import java.util.StringJoiner;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -51,9 +48,9 @@ import java.util.concurrent.TimeUnit;
 /**
  * DorisDynamicOutputFormat
  **/
-public class CDCDorisDynamicOutputFormat extends RichOutputFormat<RowData> {
+public class MyDorisDynamicOutputFormat extends RichOutputFormat<RowData> {
 
-    private static final Logger LOG = LoggerFactory.getLogger(CDCDorisDynamicOutputFormat.class);
+    private static final Logger LOG = LoggerFactory.getLogger(MyDorisDynamicOutputFormat.class);
     private static final String FIELD_DELIMITER_KEY = "column_separator";
     private static final String FIELD_DELIMITER_DEFAULT = "\t";
     private static final String LINE_DELIMITER_KEY = "line_delimiter";
@@ -62,10 +59,10 @@ public class CDCDorisDynamicOutputFormat extends RichOutputFormat<RowData> {
     private final String fieldDelimiter;
     private final String lineDelimiter;
 
-    private CDCDorisOptions options;
+    private DorisOptions options;
     private DorisReadOptions readOptions;
     private DorisExecutionOptions executionOptions;
-    private CDCDorisStreamLoad cdcDorisStreamLoad;
+    private DorisStreamLoad dorisStreamLoad;
 
 
     private final List<String> batch = new ArrayList<>();
@@ -75,16 +72,12 @@ public class CDCDorisDynamicOutputFormat extends RichOutputFormat<RowData> {
     private transient ScheduledFuture<?> scheduledFuture;
     private transient volatile Exception flushException;
 
-
-    private ResolvedSchema schema;
-
-    public CDCDorisDynamicOutputFormat(CDCDorisOptions option, DorisReadOptions readOptions, DorisExecutionOptions executionOptions, ResolvedSchema schema) {
+    public MyDorisDynamicOutputFormat(DorisOptions option, DorisReadOptions readOptions, DorisExecutionOptions executionOptions) {
         this.options = option;
         this.readOptions = readOptions;
         this.executionOptions = executionOptions;
         this.fieldDelimiter = executionOptions.getStreamLoadProp().getProperty(FIELD_DELIMITER_KEY, FIELD_DELIMITER_DEFAULT);
         this.lineDelimiter = executionOptions.getStreamLoadProp().getProperty(LINE_DELIMITER_KEY, LINE_DELIMITER_DEFAULT);
-        this.schema = schema;
     }
 
     @Override
@@ -93,20 +86,19 @@ public class CDCDorisDynamicOutputFormat extends RichOutputFormat<RowData> {
 
     @Override
     public void open(int taskNumber, int numTasks) throws IOException {
-        cdcDorisStreamLoad = new CDCDorisStreamLoad(
+        dorisStreamLoad = new DorisStreamLoad(
                 getBackend(),
                 options.getTableIdentifier().split("\\.")[0],
                 options.getTableIdentifier().split("\\.")[1],
                 options.getUsername(),
                 options.getPassword(),
-                executionOptions.getStreamLoadProp(),
-                schema);
-        LOG.info("Streamload BE:{}", cdcDorisStreamLoad.getLoadUrlStr());
+                executionOptions.getStreamLoadProp());
+        LOG.info("Streamload BE:{}", dorisStreamLoad.getLoadUrlStr());
 
         if (executionOptions.getBatchIntervalMs() != 0 && executionOptions.getBatchSize() != 1) {
             this.scheduler = Executors.newScheduledThreadPool(1, new ExecutorThreadFactory("doris-streamload-output-format"));
             this.scheduledFuture = this.scheduler.scheduleWithFixedDelay(() -> {
-                synchronized (CDCDorisDynamicOutputFormat.this) {
+                synchronized (MyDorisDynamicOutputFormat.this) {
                     if (!closed) {
                         try {
                             flush();
@@ -135,67 +127,38 @@ public class CDCDorisDynamicOutputFormat extends RichOutputFormat<RowData> {
         }
     }
 
-    private void addBatch(RowData row) {
+    private void addBatch(RowData row)  {
         StringJoiner value = new StringJoiner(this.fieldDelimiter);
         GenericRowData rowData = (GenericRowData) row;
         RowKind rowKind = rowData.getRowKind();
         System.out.println(rowKind.shortString());
-//        if (rowKind == RowKind.DELETE){
-//            try {
-//                String table = options.getTableIdentifier();
-//                Class.forName("com.mysql.cj.jdbc.Driver");
-//                String primaryKey = options.getPrimaryKey();
-//                String primaryValue = "";
-//                for (int i = 0; i < row.getArity(); i++) {
-//                    String colName = schema.getColumn(i).get().getName();
-//                    if (colName.equals(primaryKey)){
-//                        Object field = rowData.getField(i);
-//                        if (field!=null){
-//                            primaryValue = field.toString();
-//                        }
-//                    }
-//                }
-//                String sql = "delete from " + table +" where "+ options.getPrimaryKey() +"="+primaryValue;
-//                System.out.println(sql);
-//                Connection connection = DriverManager.getConnection(options.getQueryURL(),options.getUsername(), options.getPassword());
-//                PreparedStatement ps = connection.prepareStatement(sql);
-//                ps.execute();
-//            }catch (Exception e){
-//                e.printStackTrace();;
-//                throw new RuntimeException("执行sql异常!");
-//            }
-//        }else {
-//            for (int i = 0; i < row.getArity(); ++i) {
-//                Object field = rowData.getField(i);
-//                if (field != null) {
-//                    value.add(field.toString());
-//                } else {
-//                    value.add(NULL_VALUE);
-//                }
-//            }
-//            //test
-//            System.out.println("test:"+value.toString());
-//            batch.add(value.toString());
-//        }
-
-
-        for (int i = 0; i < row.getArity(); ++i) {
-            Object field = rowData.getField(i);
-            if (field != null) {
-                value.add(field.toString());
-            } else {
-                value.add(NULL_VALUE);
-            }
-        }
         if (rowKind == RowKind.DELETE){
-            value.add("1");
+            try {
+                String table = options.getTableIdentifier();
+                Class.forName("com.mysql.cj.jdbc.Driver");
+                String sql = "delete from " + table +" where INCR_PK="+rowData.getField(0).toString();
+                System.out.println(sql);
+                Connection connection = DriverManager.getConnection("jdbc:mysql://182.119.75.150:9030?evaluation","root","P@ssw0rd01");
+                PreparedStatement ps = connection.prepareStatement(sql);
+                ps.execute();
+            }catch (Exception e){
+                e.printStackTrace();;
+                throw new RuntimeException("执行sql异常!");
+            }
         }else {
-            value.add("0");
+            for (int i = 0; i < row.getArity(); ++i) {
+                Object field = rowData.getField(i);
+                if (field != null) {
+                    value.add(field.toString());
+                } else {
+                    value.add(NULL_VALUE);
+                }
+            }
+            //test
+            System.out.println("test:"+value.toString());
+            batch.add(value.toString());
         }
-        batch.add(value.toString());
-        System.out.println("test:" + value.toString());
-
-}
+    }
 
     @Override
     public synchronized void close() throws IOException {
@@ -224,7 +187,7 @@ public class CDCDorisDynamicOutputFormat extends RichOutputFormat<RowData> {
         }
         for (int i = 0; i <= executionOptions.getMaxRetries(); i++) {
             try {
-                cdcDorisStreamLoad.load(String.join(this.lineDelimiter, batch));
+                dorisStreamLoad.load(String.join(this.lineDelimiter, batch));
                 batch.clear();
                 break;
             } catch (StreamLoadException e) {
@@ -233,8 +196,8 @@ public class CDCDorisDynamicOutputFormat extends RichOutputFormat<RowData> {
                     throw new IOException(e);
                 }
                 try {
-                    cdcDorisStreamLoad.setHostPort(getBackend());
-                    LOG.warn("streamload error,switch be: {}", cdcDorisStreamLoad.getLoadUrlStr(), e);
+                    dorisStreamLoad.setHostPort(getBackend());
+                    LOG.warn("streamload error,switch be: {}", dorisStreamLoad.getLoadUrlStr(), e);
                     Thread.sleep(1000 * i);
                 } catch (InterruptedException ex) {
                     Thread.currentThread().interrupt();
@@ -248,8 +211,7 @@ public class CDCDorisDynamicOutputFormat extends RichOutputFormat<RowData> {
     private String getBackend() throws IOException {
         try {
             //get be url from fe
-//            return RestService.randomBackend(options, readOptions, LOG);
-            return RestService.randomBackend(options.getDorisOptions(), readOptions, LOG);
+            return RestService.randomBackend(options, readOptions, LOG);
         } catch (IOException | DorisException e) {
             LOG.error("get backends info fail");
             throw new IOException(e);
@@ -266,68 +228,52 @@ public class CDCDorisDynamicOutputFormat extends RichOutputFormat<RowData> {
         return new Builder();
     }
 
-/**
- * Builder for {@link CDCDorisDynamicOutputFormat}.
- */
-public static class Builder {
-    private CDCDorisOptions.Builder optionsBuilder;
-    private DorisReadOptions readOptions;
-    private DorisExecutionOptions executionOptions;
-    private ResolvedSchema schema;
+    /**
+     * Builder for {@link MyDorisDynamicOutputFormat}.
+     */
+    public static class Builder {
+        private DorisOptions.Builder optionsBuilder;
+        private DorisReadOptions readOptions;
+        private DorisExecutionOptions executionOptions;
 
-    public Builder() {
-        this.optionsBuilder = CDCDorisOptions.builder();
-    }
+        public Builder() {
+            this.optionsBuilder = DorisOptions.builder();
+        }
 
-    public Builder setFenodes(String fenodes) {
-        this.optionsBuilder.setFenodes(fenodes);
-        return this;
-    }
+        public Builder setFenodes(String fenodes) {
+            this.optionsBuilder.setFenodes(fenodes);
+            return this;
+        }
 
-    public Builder setUsername(String username) {
-        this.optionsBuilder.setUsername(username);
-        return this;
-    }
+        public Builder setUsername(String username) {
+            this.optionsBuilder.setUsername(username);
+            return this;
+        }
 
-    public Builder setPassword(String password) {
-        this.optionsBuilder.setPassword(password);
-        return this;
-    }
+        public Builder setPassword(String password) {
+            this.optionsBuilder.setPassword(password);
+            return this;
+        }
 
-    public Builder setTableIdentifier(String tableIdentifier) {
-        this.optionsBuilder.setTableIdentifier(tableIdentifier);
-        return this;
-    }
+        public Builder setTableIdentifier(String tableIdentifier) {
+            this.optionsBuilder.setTableIdentifier(tableIdentifier);
+            return this;
+        }
 
-    public Builder setPrimaryKey(String primaryKey) {
-        this.optionsBuilder.setPrimaryKey(primaryKey);
-        return this;
-    }
+        public Builder setReadOptions(DorisReadOptions readOptions) {
+            this.readOptions = readOptions;
+            return this;
+        }
 
-    public Builder setQueryURL(String queryURL) {
-        this.optionsBuilder.setQueryURL(queryURL);
-        return this;
-    }
+        public Builder setExecutionOptions(DorisExecutionOptions executionOptions) {
+            this.executionOptions = executionOptions;
+            return this;
+        }
 
-    public Builder setReadOptions(DorisReadOptions readOptions) {
-        this.readOptions = readOptions;
-        return this;
+        public MyDorisDynamicOutputFormat build() {
+            return new MyDorisDynamicOutputFormat(
+                    optionsBuilder.build(), readOptions, executionOptions
+            );
+        }
     }
-
-    public Builder setExecutionOptions(DorisExecutionOptions executionOptions) {
-        this.executionOptions = executionOptions;
-        return this;
-    }
-
-    public Builder setSchema(ResolvedSchema schema) {
-        this.schema = schema;
-        return this;
-    }
-
-    public CDCDorisDynamicOutputFormat build() {
-        return new CDCDorisDynamicOutputFormat(
-                optionsBuilder.build(), readOptions, executionOptions, schema
-        );
-    }
-}
 }
